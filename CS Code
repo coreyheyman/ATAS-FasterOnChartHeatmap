@@ -182,7 +182,6 @@ namespace CustomIndicators
                 }
                 else
                 {
-                    // Volume dropped below threshold (pulled/filled) -> deactivate the node
                     if (_activeNodes.TryGetValue(depth.Price, out var node))
                     {
                         node.EndBar = currentBar;
@@ -231,19 +230,16 @@ namespace CustomIndicators
 
                     lock (_syncRoot)
                     {
-                        // Memory Manager: Purge old inactive nodes well off-screen
                         if (_historicalNodes.Count > 4000)
                         {
                             _historicalNodes.RemoveAll(n => !n.IsActive && n.EndBar < currentBar - 2000);
                         }
 
-                        // Collect only nodes inside current view bounds (X-axis)
                         foreach (var n in _historicalNodes)
                         {
                             int xStart = ChartInfo.GetXByBar(n.StartBar);
                             int xEnd = n.IsActive ? rightEdge : ChartInfo.GetXByBar(n.EndBar);
 
-                            // Cull nodes completely off-screen horizontally
                             if (xEnd < 0 || xStart > rightEdge) continue;
 
                             visibleNodes.Add(n);
@@ -274,8 +270,12 @@ namespace CustomIndicators
                         int aCore = (int)(240 * opacMult);
                         int aTag = (int)(230 * opacMult);
 
+                        // Sort the nodes by Volume (Ascending). 
+                        // This guarantees the heaviest liquidity is drawn LAST, placing it perfectly on top of any overlapping weak levels.
+                        var sortedNodes = visibleNodes.OrderBy(n => n.Volume).ToList();
+
                         // 2. Second Pass: Draw the Historical Levels
-                        foreach (var node in visibleNodes)
+                        foreach (var node in sortedNodes)
                         {
                             int yPos = ChartInfo.GetYByPrice(node.Price, false);
                             if (yPos < -ZoneThickness || yPos > bottomEdge + ZoneThickness) continue;
@@ -283,7 +283,6 @@ namespace CustomIndicators
                             int xStart = ChartInfo.GetXByBar(node.StartBar);
                             int xEnd = node.IsActive ? rightEdge : ChartInfo.GetXByBar(node.EndBar);
 
-                            // Ensure micro-orders lasting 1 tick are still visible as a small blip
                             if (xEnd <= xStart) xEnd = xStart + 8;
                             int width = xEnd - xStart;
 
@@ -307,7 +306,7 @@ namespace CustomIndicators
                             int coreThick = Math.Max(1, (int)(ZoneThickness * 0.25));
                             context.FillRectangle(coreCol, new Rectangle(xStart, yPos - coreThick / 2, width, coreThick));
 
-                            // Only render tags for currently ACTIVE resting limit orders on the right edge
+                            // Render tags for ACTIVE resting limit orders
                             if (ShowVolumeTags && node.IsActive)
                             {
                                 string tag = $"{node.Volume:N0}";

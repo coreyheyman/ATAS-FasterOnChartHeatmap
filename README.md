@@ -48,3 +48,57 @@ Strategic Application
 Spotting Spoofers: Watch for bright red walls that suddenly abruptly end before price reaches them. This indicates fake liquidity used to herd retail traders.
 
 True Magnets: Walls that persist and hold their bright color as price approaches are true institutional targets or heavy defense lines. Look for price to stall or reverse violently when intersecting these historical bands.
+
+<img width="1717" height="929" alt="image" src="https://github.com/user-attachments/assets/0e36a3f5-5974-4e27-ae61-1613255637e9" />
+<img width="608" height="652" alt="image" src="https://github.com/user-attachments/assets/ba191b9e-74bf-4cd2-bf0b-321d0dfcbd2f" />
+
+
+INSTRUCTIONS:
+
+Option A: Installing via Compiled .dll File (Easiest) If you shared a pre-compiled .dll file, users can install it instantly without editing code:
+
+Download the .dll file.
+
+Open your ATAS custom indicators folder by pasting this path into your Windows File Explorer address bar: %APPDATA%\ATAS\Indicators
+
+Drop the .dll file directly into that folder.
+
+Open or restart ATAS, open any chart, and press Ctrl + I.
+
+Look under the Custom category to find and add Gamma Regime (0DTE).
+
+Option B: Visual Studio
+
+Create a New Class Library Project Open Visual Studio and click Create a new project. Search for and select Class Library (make sure it's the C# version targeting .NET Framework or the appropriate .NET runtime version your ATAS version uses, typically .NET 10 depending on the ATAS build). Click Next.
+
+Name your project (e.g., My Indicator), choose your saving location, and click Create.
+
+Add ATAS Reference Assemblies To compile ATAS indicators, your project needs references to the core ATAS libraries (ATAS.Indicators.dll and OFT.Rendering.dll). In the Solution Explorer on the right, right-click on Dependencies (or References) and select Add Reference... (or Manage NuGet Packages if applicable).
+
+Click Browse and navigate to your ATAS installation directory (usually C:\Program Files\ATAS\ or your user path).
+
+Select the following required DLL files:
+
+ATAS.Indicators.dll
+
+OFT.Rendering.dll
+
+Any other dependencies referenced by your project (like data feed cores).
+
+Click OK to add them. (Tip: In the reference properties, set Copy Local to False since ATAS loads these natively at runtime).
+
+Add the Code File Visual Studio automatically creates a default file named Class1.cs. Right-click it, select Rename, and change it to MyCustomIndicator.cs. Open the file, delete any placeholder code, and paste your indicator C# source code into it.
+
+Save the file (Ctrl + S).
+
+Build the Project Go to the top menu and select Build > Clean Solution (to clear out old build caches). Select Build > Build Solution (Ctrl + Shift + B).
+
+Check the Output window at the bottom to ensure it says 1 succeeded, 0 failed.
+
+Deploy to ATAS Once built successfully, go to your project folder in Windows Explorer and find the compiled file located in bin\Debug\ or bin\Release. Copy the generated .dll file.
+
+Drop it directly into your local ATAS indicators folder: %APPDATA%\ATAS\Indicators
+
+Open ATAS, open a chart, press Ctrl + I, and add your custom indicator from the list!
+
+(If you have any trouble during this process, chatgpt, claude or gemini is your friend)

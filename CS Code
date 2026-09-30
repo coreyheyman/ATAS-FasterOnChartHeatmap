@@ -1,0 +1,406 @@
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
+using System.Drawing;
+using System.Linq;
+using ATAS.DataFeedsCore;
+using ATAS.Indicators;
+using OFT.Rendering.Context;
+using OFT.Rendering.Control;
+using OFT.Rendering.Tools;
+
+namespace CustomIndicators
+{
+    [DisplayName("Live DOM Heatmap")]
+    [Category("OFK Suite")]
+    public class LiveDomHeatmapIndicator : Indicator
+    {
+        #region Enums
+
+        public enum ButtonCorner { TopLeft, TopRight, BottomLeft, BottomRight }
+
+        #endregion
+
+        #region Properties
+
+        [Display(Name = "Volume Threshold (Min Size)", GroupName = "1. Heatmap Settings", Order = 1)]
+        [Range(1, 100000)]
+        public decimal VolumeThreshold { get; set; } = 15m;
+
+        [Display(Name = "Zone Thickness (px)", GroupName = "1. Heatmap Settings", Order = 2)]
+        [Range(2, 100)]
+        public int ZoneThickness { get; set; } = 14;
+
+        [Display(Name = "Show Volume Tags", GroupName = "1. Heatmap Settings", Order = 3)]
+        public bool ShowVolumeTags { get; set; } = true;
+
+        [Display(Name = "Heatmap Opacity (%)", GroupName = "1. Heatmap Settings", Order = 4)]
+        [Range(10, 100)]
+        public int HeatmapOpacity { get; set; } = 100;
+
+        [Display(Name = "Lowest Liquidity (1)", GroupName = "2. Aesthetic Gradient", Order = 1)]
+        public Color Color1 { get; set; } = Color.FromArgb(255, 0, 40, 100); // Deep Blue
+
+        [Display(Name = "Low-Mid Liquidity (2)", GroupName = "2. Aesthetic Gradient", Order = 2)]
+        public Color Color2 { get; set; } = Color.FromArgb(255, 0, 160, 220); // Cyan / Light Blue
+
+        [Display(Name = "Medium Liquidity (3)", GroupName = "2. Aesthetic Gradient", Order = 3)]
+        public Color Color3 { get; set; } = Color.FromArgb(255, 255, 255, 255); // White Core
+
+        [Display(Name = "High-Mid Liquidity (4)", GroupName = "2. Aesthetic Gradient", Order = 4)]
+        public Color Color4 { get; set; } = Color.FromArgb(255, 255, 200, 0); // Yellow / Orange
+
+        [Display(Name = "Max Liquidity (5)", GroupName = "2. Aesthetic Gradient", Order = 5)]
+        public Color Color5 { get; set; } = Color.FromArgb(255, 230, 20, 30); // Bright Red
+
+        [Display(Name = "Tag Text Color", GroupName = "3. Styling", Order = 1)]
+        public Color TagTextColor { get; set; } = Color.White;
+
+        [Display(Name = "Font Size", GroupName = "3. Styling", Order = 2)]
+        [Range(7, 20)]
+        public int FontSize
+        {
+            get => (int)_font.Size;
+            set => _font = new RenderFont("Arial", value, FontStyle.Bold);
+        }
+
+        [Display(Name = "Button Position", GroupName = "4. UI Settings", Order = 1)]
+        public ButtonCorner ButtonLocation { get; set; } = ButtonCorner.TopLeft;
+
+        [Display(Name = "Button Offset X", GroupName = "4. UI Settings", Order = 2)]
+        [Range(0, 2000)]
+        public int ButtonOffsetX { get; set; } = 20;
+
+        [Display(Name = "Button Offset Y", GroupName = "4. UI Settings", Order = 3)]
+        [Range(0, 2000)]
+        public int ButtonOffsetY { get; set; } = 60;
+
+        #endregion
+
+        #region Fields / Classes
+
+        private class HeatmapNode
+        {
+            public int StartBar { get; set; }
+            public int EndBar { get; set; }
+            public decimal Price { get; set; }
+            public decimal Volume { get; set; }
+            public bool IsActive { get; set; }
+        }
+
+        private RenderFont _font = new("Arial", 9, FontStyle.Bold);
+        private Rectangle _buttonRect = new(20, 60, 105, 32);
+        private bool _heatmapEnabled = true;
+        private DateTime _lastRedrawTime = DateTime.MinValue;
+
+        // Data Storage
+        private readonly object _syncRoot = new();
+        private readonly List<HeatmapNode> _historicalNodes = new();
+        private readonly Dictionary<decimal, HeatmapNode> _activeNodes = new();
+
+        #endregion
+
+        public LiveDomHeatmapIndicator() : base(true)
+        {
+            DenyToChangePanel = true;
+            EnableCustomDrawing = true;
+            SubscribeToDrawingEvents(DrawingLayouts.Historical | DrawingLayouts.Final);
+
+            DataSeries[0].IsHidden = true;
+            ((ValueDataSeries)DataSeries[0]).VisualType = VisualMode.Hide;
+        }
+
+        protected override void OnInitialize()
+        {
+            lock (_syncRoot)
+            {
+                _historicalNodes.Clear();
+                _activeNodes.Clear();
+
+                int currentBar = Math.Max(0, CurrentBar - 1);
+
+                try
+                {
+                    var snapshot = GetMarketDepthSnapshot();
+                    if (snapshot != null)
+                    {
+                        foreach (var item in snapshot)
+                        {
+                            if (item != null && item.Volume >= VolumeThreshold)
+                            {
+                                var node = new HeatmapNode { StartBar = currentBar, EndBar = currentBar, Price = item.Price, Volume = item.Volume, IsActive = true };
+                                _activeNodes[item.Price] = node;
+                                _historicalNodes.Add(node);
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+
+        protected override void MarketDepthChanged(MarketDataArg depth)
+        {
+            if (depth != null) ProcessDepth(depth);
+            TriggerLiveUpdate();
+            base.MarketDepthChanged(depth);
+        }
+
+        protected override void MarketDepthsChanged(IEnumerable<MarketDataArg> depths)
+        {
+            if (depths != null)
+            {
+                foreach (var depth in depths)
+                {
+                    if (depth != null) ProcessDepth(depth);
+                }
+            }
+            TriggerLiveUpdate();
+            base.MarketDepthsChanged(depths);
+        }
+
+        private void ProcessDepth(MarketDataArg depth)
+        {
+            int currentBar = Math.Max(0, CurrentBar - 1);
+
+            lock (_syncRoot)
+            {
+                if (depth.Volume >= VolumeThreshold)
+                {
+                    if (_activeNodes.TryGetValue(depth.Price, out var node))
+                    {
+                        node.EndBar = currentBar;
+                        node.Volume = depth.Volume;
+                    }
+                    else
+                    {
+                        var newNode = new HeatmapNode { StartBar = currentBar, EndBar = currentBar, Price = depth.Price, Volume = depth.Volume, IsActive = true };
+                        _activeNodes[depth.Price] = newNode;
+                        _historicalNodes.Add(newNode);
+                    }
+                }
+                else
+                {
+                    // Volume dropped below threshold (pulled/filled) -> deactivate the node
+                    if (_activeNodes.TryGetValue(depth.Price, out var node))
+                    {
+                        node.EndBar = currentBar;
+                        node.IsActive = false;
+                        _activeNodes.Remove(depth.Price);
+                    }
+                }
+            }
+        }
+
+        private void TriggerLiveUpdate()
+        {
+            if ((DateTime.Now - _lastRedrawTime).TotalMilliseconds > 50)
+            {
+                _lastRedrawTime = DateTime.Now;
+                RedrawChart();
+            }
+        }
+
+        protected override void OnCalculate(int bar, decimal value) { }
+
+        protected override void OnRender(RenderContext context, DrawingLayouts layout)
+        {
+            if (ChartInfo == null || Container == null) return;
+
+            int rightEdge = Container.Region.Width;
+            int bottomEdge = Container.Region.Height;
+
+            // ==========================================
+            // PHASE 1: DRAW BEHIND THE CANDLES
+            // ==========================================
+            if (layout == DrawingLayouts.Historical)
+            {
+                if (_heatmapEnabled && _historicalNodes.Count == 0)
+                {
+                    string warnText = "WAITING FOR DOM / NO LEVEL 2 DATA";
+                    var warnSize = context.MeasureString(warnText, _font);
+                    context.DrawString(warnText, _font, Color.FromArgb(150, 150, 150), (rightEdge - (int)warnSize.Width) / 2, (bottomEdge - (int)warnSize.Height) / 2);
+                    return;
+                }
+
+                if (_heatmapEnabled)
+                {
+                    int currentBar = Math.Max(0, CurrentBar - 1);
+                    List<HeatmapNode> visibleNodes = new();
+
+                    lock (_syncRoot)
+                    {
+                        // Memory Manager: Purge old inactive nodes well off-screen
+                        if (_historicalNodes.Count > 4000)
+                        {
+                            _historicalNodes.RemoveAll(n => !n.IsActive && n.EndBar < currentBar - 2000);
+                        }
+
+                        // Collect only nodes inside current view bounds (X-axis)
+                        foreach (var n in _historicalNodes)
+                        {
+                            int xStart = ChartInfo.GetXByBar(n.StartBar);
+                            int xEnd = n.IsActive ? rightEdge : ChartInfo.GetXByBar(n.EndBar);
+
+                            // Cull nodes completely off-screen horizontally
+                            if (xEnd < 0 || xStart > rightEdge) continue;
+
+                            visibleNodes.Add(n);
+                        }
+                    }
+
+                    if (visibleNodes.Count > 0)
+                    {
+                        decimal maxScreenVol = 0m;
+                        decimal minScreenVol = decimal.MaxValue;
+
+                        // 1. First Pass: Find Max/Min specific to visible screen boundaries (Y-axis)
+                        foreach (var node in visibleNodes)
+                        {
+                            int yPos = ChartInfo.GetYByPrice(node.Price, false);
+                            if (yPos >= -ZoneThickness && yPos <= bottomEdge + ZoneThickness)
+                            {
+                                if (node.Volume > maxScreenVol) maxScreenVol = node.Volume;
+                                if (node.Volume < minScreenVol) minScreenVol = node.Volume;
+                            }
+                        }
+
+                        if (minScreenVol == decimal.MaxValue) minScreenVol = 0m;
+
+                        float opacMult = HeatmapOpacity / 100f;
+                        int aBase = (int)(80 * opacMult);
+                        int aMid = (int)(160 * opacMult);
+                        int aCore = (int)(240 * opacMult);
+                        int aTag = (int)(230 * opacMult);
+
+                        // 2. Second Pass: Draw the Historical Levels
+                        foreach (var node in visibleNodes)
+                        {
+                            int yPos = ChartInfo.GetYByPrice(node.Price, false);
+                            if (yPos < -ZoneThickness || yPos > bottomEdge + ZoneThickness) continue;
+
+                            int xStart = ChartInfo.GetXByBar(node.StartBar);
+                            int xEnd = node.IsActive ? rightEdge : ChartInfo.GetXByBar(node.EndBar);
+
+                            // Ensure micro-orders lasting 1 tick are still visible as a small blip
+                            if (xEnd <= xStart) xEnd = xStart + 8;
+                            int width = xEnd - xStart;
+
+                            float intensity = 1f;
+                            if (maxScreenVol > minScreenVol)
+                            {
+                                intensity = (float)((node.Volume - minScreenVol) / (maxScreenVol - minScreenVol));
+                            }
+
+                            // LAYER 1: Base Glow
+                            Color baseCol = GetHeatmapColor(intensity, aBase);
+                            context.FillRectangle(baseCol, new Rectangle(xStart, yPos - ZoneThickness / 2, width, ZoneThickness));
+
+                            // LAYER 2: Mid Band
+                            Color midCol = GetHeatmapColor(Math.Min(1f, intensity + 0.15f), aMid);
+                            int midThick = Math.Max(2, (int)(ZoneThickness * 0.6));
+                            context.FillRectangle(midCol, new Rectangle(xStart, yPos - midThick / 2, width, midThick));
+
+                            // LAYER 3: Hot Core
+                            Color coreCol = GetHeatmapColor(Math.Min(1f, intensity + 0.35f), aCore);
+                            int coreThick = Math.Max(1, (int)(ZoneThickness * 0.25));
+                            context.FillRectangle(coreCol, new Rectangle(xStart, yPos - coreThick / 2, width, coreThick));
+
+                            // Only render tags for currently ACTIVE resting limit orders on the right edge
+                            if (ShowVolumeTags && node.IsActive)
+                            {
+                                string tag = $"{node.Volume:N0}";
+                                var tagSize = context.MeasureString(tag, _font);
+                                int tagX = rightEdge - (int)tagSize.Width - 12;
+                                int tagY = yPos - (int)tagSize.Height / 2;
+
+                                Color tagBgColor = GetHeatmapColor(intensity, aTag);
+                                context.FillRectangle(tagBgColor, new Rectangle(tagX - 4, tagY - 2, (int)tagSize.Width + 8, (int)tagSize.Height + 4));
+                                context.DrawString(tag, _font, TagTextColor, tagX, tagY);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ==========================================
+            // PHASE 2: DRAW ON TOP OF CANDLES (UI)
+            // ==========================================
+            if (layout == DrawingLayouts.Final)
+            {
+                int btnW = 105;
+                int btnH = 32;
+                int startX = ButtonOffsetX;
+                int startY = ButtonOffsetY;
+
+                if (ButtonLocation == ButtonCorner.TopRight || ButtonLocation == ButtonCorner.BottomRight)
+                    startX = rightEdge - btnW - ButtonOffsetX;
+
+                if (ButtonLocation == ButtonCorner.BottomLeft || ButtonLocation == ButtonCorner.BottomRight)
+                    startY = bottomEdge - btnH - ButtonOffsetY;
+
+                _buttonRect = new Rectangle(startX, startY, btnW, btnH);
+
+                string btnText = _heatmapEnabled ? "HEATMAP: ON" : "HEATMAP: OFF";
+                Color btnBg = _heatmapEnabled ? Color.FromArgb(220, 0, 140, 70) : Color.FromArgb(220, 160, 40, 40);
+                Color btnBorder = _heatmapEnabled ? Color.FromArgb(255, 0, 200, 100) : Color.FromArgb(255, 220, 80, 80);
+
+                context.FillRectangle(btnBg, _buttonRect);
+                context.DrawRectangle(new RenderPen(btnBorder, 1.5f), _buttonRect);
+
+                var btnTextSize = context.MeasureString(btnText, _font);
+                int textX = _buttonRect.X + (_buttonRect.Width - (int)btnTextSize.Width) / 2;
+                int textY = _buttonRect.Y + (_buttonRect.Height - (int)btnTextSize.Height) / 2;
+                context.DrawString(btnText, _font, Color.White, textX, textY);
+            }
+        }
+
+        // --- 5-POINT AESTHETIC GRADIENT INTERPOLATION ---
+
+        private Color GetHeatmapColor(float intensity, int alpha)
+        {
+            intensity = Math.Clamp(intensity, 0f, 1f);
+            Color c1, c2;
+            float t;
+
+            if (intensity < 0.25f)
+            {
+                c1 = Color1; c2 = Color2;
+                t = intensity / 0.25f;
+            }
+            else if (intensity < 0.50f)
+            {
+                c1 = Color2; c2 = Color3;
+                t = (intensity - 0.25f) / 0.25f;
+            }
+            else if (intensity < 0.75f)
+            {
+                c1 = Color3; c2 = Color4;
+                t = (intensity - 0.50f) / 0.25f;
+            }
+            else
+            {
+                c1 = Color4; c2 = Color5;
+                t = (intensity - 0.75f) / 0.25f;
+            }
+
+            int r = (int)(c1.R + (c2.R - c1.R) * t);
+            int g = (int)(c1.G + (c2.G - c1.G) * t);
+            int b = (int)(c1.B + (c2.B - c1.B) * t);
+
+            return Color.FromArgb(Math.Clamp(alpha, 0, 255), r, g, b);
+        }
+
+        public override bool ProcessMouseDown(RenderControlMouseEventArgs e)
+        {
+            if (_buttonRect.Contains(e.Location))
+            {
+                _heatmapEnabled = !_heatmapEnabled;
+                RedrawChart();
+                return true;
+            }
+            return false;
+        }
+    }
+}

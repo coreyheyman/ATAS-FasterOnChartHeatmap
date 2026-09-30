@@ -1,4 +1,5 @@
 Live DOM Heatmap
+
 Overview
 The Live DOM Heatmap is a high-performance, visually immersive Level 2 order book tracker built for ATAS. Rather than just displaying the current resting limit orders, it acts as a Historical Node Tracker, painting a continuous visual history of institutional liquidity. It allows you to see exactly where major walls are resting, how long they have been there, and exactly when they are pulled or filled.
 
